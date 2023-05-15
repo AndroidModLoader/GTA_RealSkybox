@@ -65,6 +65,8 @@ void            (*CFileMgr__SetDir)(const char *dir);
 int             (*CFileMgr__OpenFile)(const char *path, const char *mode);
 void            (*CFileMgr__CloseFile)(int fd);
 char*           (*CFileLoader__LoadLine)(int fd);
+void            (*RwFrameTranslate)(RwFrame*, CVector*, RwOpCombineType);
+void            (*RwFrameScale)(RwFrame*, CVector*, RwOpCombineType);
 
 /////////////////////////////////////////////////////////////////////////////
 //////////////////////////////     Patches     //////////////////////////////
@@ -87,24 +89,6 @@ __attribute__((optnone)) __attribute__((naked)) void _inject(void)
         "POP             {R0-R11}\n"
         "BX              R12\n"
     :: "r" (_BackTo));
-}
-
-/////////////////////////////////////////////////////////////////////////////
-///////////////////////////////     Hooks     ///////////////////////////////
-/////////////////////////////////////////////////////////////////////////////
-void LoadSkyboxTextures();
-void PrepareSkyboxModel();
-DECL_HOOK(bool, InitialiseCoreDataAfterRW)
-{
-    bool ret = InitialiseCoreDataAfterRW();
-    if(!ret) return false;
-
-    for (int i = 0; i < 21; ++i) { aSkyboxes[i] = new Skybox(); }
-
-    LoadSkyboxTextures();
-    PrepareSkyboxModel();
-
-    return true;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -147,7 +131,7 @@ void LoadSkyboxTextures()
             continue;
         }
 
-        if(sscanf(line, "%d, %s", &weatherId, &textureName) == 2 && weatherId <= WEATHER_FOR_STARS)
+        if(sscanf(line, "%d, %s", &weatherId, (char*)&textureName) == 2 && weatherId <= WEATHER_FOR_STARS)
         {
             char texNamePath[64];
             sprintf(texNamePath, "%s%s.png", szStartPath, textureName);
@@ -202,6 +186,38 @@ bool NoSunriseWeather(eWeatherType id)
     return (id == eWeatherType::WEATHER_CLOUDY_COUNTRYSIDE || id == eWeatherType::WEATHER_CLOUDY_LA || id == eWeatherType::WEATHER_CLOUDY_SF || id == eWeatherType::WEATHER_CLOUDY_VEGAS ||
             id == eWeatherType::WEATHER_RAINY_COUNTRYSIDE || id == eWeatherType::WEATHER_RAINY_SF || id == eWeatherType::WEATHER_FOGGY_SF);
 }
+void RenderSkybox()
+{
+    RwFrameTranslate(pSkyFrame, &TheCamera->GetPosition(), rwCOMBINEREPLACE);
+    CVector scale = CVector(0.3f, 0.3f, 0.3f);
+    RwFrameScale(pSkyFrame, &scale, rwCOMBINEPRECONCAT);
+    //RwFrameRotate(pSkyFrame, (RwV3d*)0x008D2E18, aSkyboxes[newWeatherType]->rot, rwCOMBINEPRECONCAT);
+    RwFrameUpdateObjects(pSkyFrame);
+    pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[0]->tex;
+    RenderAtomicWithAlpha(pSkyAtomic, 255);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+///////////////////////////////     Hooks     ///////////////////////////////
+/////////////////////////////////////////////////////////////////////////////
+DECL_HOOKv(GameInit3, void* data)
+{
+    GameInit3(data);
+
+    for (int i = 0; i < 21; ++i) { aSkyboxes[i] = new Skybox(); }
+
+    LoadSkyboxTextures();
+    PrepareSkyboxModel();
+}
+DECL_HOOKv(RenderClouds)
+{
+    RenderClouds();
+    RenderSkybox();
+}
+
+/////////////////////////////////////////////////////////////////////////////
+///////////////////////////////     Main     ////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////
 extern "C" void OnModPreLoad()
 {
     logger->SetTag("RealSkybox");
@@ -246,11 +262,14 @@ extern "C" void OnModPreLoad()
     SET_TO(CFileMgr__OpenFile,              aml->GetSym(hGTASA, "_ZN8CFileMgr8OpenFileEPKcS1_"));
     SET_TO(CFileMgr__CloseFile,             aml->GetSym(hGTASA, "_ZN8CFileMgr9CloseFileEj"));
     SET_TO(CFileLoader__LoadLine,           aml->GetSym(hGTASA, "_ZN11CFileLoader8LoadLineEj"));
+    SET_TO(RwFrameTranslate,                aml->GetSym(hGTASA, "_Z16RwFrameTranslateP7RwFramePK5RwV3d15RwOpCombineType"));
+    SET_TO(RwFrameScale,                    aml->GetSym(hGTASA, "_Z12RwFrameScaleP7RwFramePK5RwV3d15RwOpCombineType"));
 
     // GTA Patches
     //_BackTo = pGTASA + 0x + 0x1;
     //aml->Redirect(pGTASA + 0x + 0x1, (uintptr_t)_inject);
     
     // GTA Hooks
-    HOOK(InitialiseCoreDataAfterRW, aml->GetSym(hGTASA, "_ZN5CGame25InitialiseCoreDataAfterRWEv"));
+    HOOK(GameInit3,                         aml->GetSym(hGTASA, "_ZN5CGame5Init3EPKc"));
+    HOOK(RenderClouds,                      aml->GetSym(hGTASA, "_ZN7CClouds6RenderEv"));
 }
