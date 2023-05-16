@@ -1,0 +1,6 @@
+cat=0 name=Default onfoot=0 slow=0 fast=0 defaultstream=0
+"cloudy_1" height=2048 width=2048 img=50abbb8f
+"extrasunny_1" height=2048 width=2048 img=07e715b5
+"rainy_1" height=2048 width=2048 img=3abde4c0
+"stars_1" height=4096 width=4096 img=2ae76f7f
+"sunny_1" height=2048 width=2048 img=2c7eb7cb

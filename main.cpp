@@ -1,5 +1,7 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
+#include <cstdio>
+#include <ctime>
 
 #include "GTASA_STRUCTS.h"
 #include "skybox.h"
@@ -20,15 +22,31 @@ void* hGTASA;
 RpAtomic* pSkyAtomic = NULL;
 RwFrame* pSkyFrame = NULL;
 Skybox *aSkyboxes[eWeatherType::WEATHER_UNDERWATER + 1];
-CVector vecOldSkyboxScale, vecNewSkyboxScale, vecStarsSkyboxScale, vecCloudsRotationVector, vecStarsRotationVector;
-bool bChangeWeather = true, bUsingInterp = false, bProcessedFirst = false;
-float fTestInterp = 0.0f, fInCityFactor = 0.0f;
+CVector oldSkyboxScale, newSkyboxScale, starsSkyboxScale, cloudsRotationVector, starsRotationVector;
+bool changeWeather = true, usingInterp = false, processedFirst = false;
+float testInterp = 0.0f, inCityFactor = 0.0f;
+CVector ZAxis(0.0f, 0.0f, 1.0f);
+RwRGBAReal vecSkyColor = {1.0f, 1.0f, 1.0f, 1.0f};
+float increaseRot = 0.0f;
+bool sunReflectionChanged = false, skyboxDrawAfter = true;
+float lastFarClip = 0.0f, minFarPlane = 1100.0f, gameDefaultFogDensity = 1.0f, fogDensityDefault = 0.0012f, fogDensity = fogDensityDefault;
+int skyboxFogType = 2;
+float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.2f, cloudsMultBrightness = 0.4f,
+      cloudsNightDarkLimit = 0.8f, cloudsMinBrightness = 0.05f, cloudsCityOrange = 1.0f, starsCityAlphaRemove = 0.8f, cloudsMultSunrise = 2.5f;
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Vars      ///////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-CCamera* TheCamera;
+CCamera *TheCamera;
 RpAtomicCallBackRender AtomicDefaultRenderCallBack;
+float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue;
+uint32_t *m_snTimeInMilliseconds;
+uint16_t *NewWeatherType, *OldWeatherType;
+uint8_t *ms_nGameClockMonths;
+int *m_bExtraColourOn, *m_CurrentStoredValue;
+eWeatherRegion *WeatherRegion;
+CColourSet *m_CurrentColours;
+CVector *m_VectorToSun;
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Funcs     ///////////////////////////////
@@ -61,35 +79,17 @@ void            (*RwRasterSetFromImage)(RwRaster*, RwImage*);
 void            (*RwImageDestroy)(RwImage*);
 RwTexture*      (*RwTextureCreate)(RwRaster*);
 void            (*RwTextureDestroy)(RwTexture*);
-void            (*CFileMgr__SetDir)(const char *dir);
-int             (*CFileMgr__OpenFile)(const char *path, const char *mode);
-void            (*CFileMgr__CloseFile)(int fd);
-char*           (*CFileLoader__LoadLine)(int fd);
 void            (*RwFrameTranslate)(RwFrame*, CVector*, RwOpCombineType);
 void            (*RwFrameScale)(RwFrame*, CVector*, RwOpCombineType);
-
-/////////////////////////////////////////////////////////////////////////////
-//////////////////////////////     Patches     //////////////////////////////
-/////////////////////////////////////////////////////////////////////////////
-uintptr_t _BackTo;
-extern "C" void _Patch(float intensity)
-{
-    
-}
-__attribute__((optnone)) __attribute__((naked)) void _inject(void)
-{
-    asm volatile(
-        "PUSH            {R0-R11}\n"
-        "VMOV            R0, S20\n"
-        "VPUSH           {S0-S31}\n"
-        "BL              _Patch\n"
-        "VPOP            {S0-S31}\n");
-    asm volatile(
-        "MOV             R12, %0\n"
-        "POP             {R0-R11}\n"
-        "BX              R12\n"
-    :: "r" (_BackTo));
-}
+void            (*RwFrameRotate)(RwFrame*, CVector*, float, RwOpCombineType);
+TextureDatabaseRuntime* (*TextureDatabaseLoad)(const char*, bool, TextureDatabaseFormat);
+void            (*TextureDatabaseRegister)(TextureDatabase*);
+void            (*TextureDatabaseUnregister)(TextureDatabase*);
+RwTexture*      (*TextureDatabaseGetTexture)(const char*);
+void            (*DeActivateDirectional)();
+void            (*SetAmbientColours)(RwRGBAReal*);
+void            (*SetFullAmbient)();
+void            (*RwRenderStateSet)(RwRenderState, void *);
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Funcs     ///////////////////////////////
@@ -110,41 +110,63 @@ RwTexture* SAUtils__LoadRwTextureFromPNG(const char* fn)
     }
     return pTexture;
 }
+RwTexture* GetTexIfLoaded(const char* name)
+{
+    for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
+    {
+        if(aSkyboxes[i]->tex && !strncmp(aSkyboxes[i]->tex->name, name, rwTEXTUREBASENAMELENGTH)) return aSkyboxes[i]->tex;
+    }
+    return NULL;
+}
 void LoadSkyboxTextures()
 {
     const char* szStartPath = "realskybox/tex/";
 
-    CFileMgr__SetDir("REALSKYBOX");
-    int fd = CFileMgr__OpenFile("SKYBOXES.DAT", "rb");
-    CFileMgr__SetDir("");
-
-    const char* line = NULL;
+    FILE *file;
+    char line[256], textureName[32];
     bool bStartLoading = false;
     int weatherId = 0;
-    char textureName[32];
-    while((line = CFileLoader__LoadLine(fd)) != NULL)
+
+    TextureDatabase* tdb = TextureDatabaseLoad("realskybox", false, DF_DXT);
+    if(!tdb) return;
+
+    TextureDatabaseRegister(tdb);
+
+    snprintf(line, sizeof(line), "%s/texdb/realskybox/skyboxes.dat", aml->GetAndroidDataPath());
+    if ((file = fopen(line, "r")) == NULL) return;
+
+    while (fgets(line, sizeof(line), file) != NULL)
     {
         if(line[0] == 0 || line[0] == '#' || line[0] == ';' || line[0] == '/') continue;
         if(!bStartLoading)
         {
-            if(!strncmp(line, "skytexs", 8)) bStartLoading = true;
+            if(!strncmp(line, "skytexs", 7)) bStartLoading = true;
             continue;
         }
 
-        if(sscanf(line, "%d, %s", &weatherId, (char*)&textureName) == 2 && weatherId <= WEATHER_FOR_STARS)
+        if(!strncmp(line, "end", 3)) break;
+
+        if((sscanf(line, "%d, %s", &weatherId, (char*)&textureName) == 2 || 
+            sscanf(line, "%d %s", &weatherId, (char*)&textureName) == 2) && weatherId <= WEATHER_FOR_STARS)
         {
-            char texNamePath[64];
-            sprintf(texNamePath, "%s%s.png", szStartPath, textureName);
-            aSkyboxes[weatherId]->tex = SAUtils__LoadRwTextureFromPNG(texNamePath);
-            if (aSkyboxes[weatherId]->tex) aSkyboxes[weatherId]->tex->filterAddressing = 2;
+            aSkyboxes[weatherId]->tex = GetTexIfLoaded(textureName);
+            if (!aSkyboxes[weatherId]->tex)
+            {
+                aSkyboxes[weatherId]->tex = TextureDatabaseGetTexture(textureName);
+                if (aSkyboxes[weatherId]->tex)
+                {
+                    aSkyboxes[weatherId]->tex->filterAddressing = 2;
+                }
+            }
         }
     }
 
-    CFileMgr__CloseFile(fd);
+    TextureDatabaseUnregister(tdb);
+    fclose(file);
 }
 void PrepareSkyboxModel()
 {
-    RwStream *stream = RwStreamOpen(2, 1, "realskybox/skybox.dff");
+    RwStream *stream = RwStreamOpen(2, 1, "texdb/realskybox/skybox.dff");
     if (stream)
     {
         if (RwStreamFindChunk(stream, 16, 0, 0))
@@ -188,13 +210,235 @@ bool NoSunriseWeather(eWeatherType id)
 }
 void RenderSkybox()
 {
-    RwFrameTranslate(pSkyFrame, &TheCamera->GetPosition(), rwCOMBINEREPLACE);
-    CVector scale = CVector(0.3f, 0.3f, 0.3f);
-    RwFrameScale(pSkyFrame, &scale, rwCOMBINEPRECONCAT);
-    //RwFrameRotate(pSkyFrame, (RwV3d*)0x008D2E18, aSkyboxes[newWeatherType]->rot, rwCOMBINEPRECONCAT);
-    RwFrameUpdateObjects(pSkyFrame);
-    pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[0]->tex;
-    RenderAtomicWithAlpha(pSkyAtomic, 255);
+    int oldWeatherType = *OldWeatherType;
+    int newWeatherType = *NewWeatherType;
+    if (oldWeatherType > eWeatherType::WEATHER_UNDERWATER) oldWeatherType = eWeatherType::WEATHER_SUNNY_LA;
+    if (newWeatherType > eWeatherType::WEATHER_UNDERWATER) newWeatherType = eWeatherType::WEATHER_SUNNY_LA;
+
+    if (increaseRot > 0.0f)
+    {
+        increaseRot -= pow(0.08f, 2) * *ms_fTimeStep * MAGIC_FLOAT;
+        if (increaseRot < 0.0f) increaseRot = 0.0f;
+    }
+
+    // Tweak by distance
+    float farPlane = TheCamera->m_pRwCamera->farClip;
+    float goodDistanceFactor = (farPlane - 1000.0f) / 1000.0f; //  if farPlane is 2000.0, goodDistanceFactor is 2.0
+    if (goodDistanceFactor < 0.01f) goodDistanceFactor = 0.01f;
+
+    if (skyboxFogType <= 1) //linear
+    {
+        fogDensity = gameDefaultFogDensity;
+    }
+    else
+    {
+        fogDensity = fogDensityDefault / goodDistanceFactor;
+        if (*UnderWaterness > 0.4f)
+        {
+            fogDensity *= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
+            fogDensity *= 0.1f;
+        }
+    }
+
+    oldSkyboxScale.x = skyboxSizeXY * goodDistanceFactor;
+    oldSkyboxScale.y = skyboxSizeXY * goodDistanceFactor;
+    oldSkyboxScale.z = skyboxSizeZ * goodDistanceFactor;
+
+    newSkyboxScale.x = oldSkyboxScale.x * 1.05f;
+    newSkyboxScale.y = oldSkyboxScale.y * 1.05f;
+    newSkyboxScale.z = oldSkyboxScale.z * 1.05f;
+
+    starsSkyboxScale.x = newSkyboxScale.x * 1.05f;
+    starsSkyboxScale.y = newSkyboxScale.y * 1.05f;
+    starsSkyboxScale.z = newSkyboxScale.z * 1.05f;
+
+    float oldAlpha = (1.0f - *InterpolationValue) * 255.0f;
+    float newAlpha = *InterpolationValue * 255.0f;
+    float dayNightBalance = GetDayNightBalance();
+
+    // Get position
+    CVector camPos = TheCamera->GetPosition();
+
+    for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
+    {
+        if (!aSkyboxes[i]->inUse)
+        {
+            if (i == WEATHER_FOR_STARS)
+            {
+                aSkyboxes[i]->rot = *ms_nGameClockMonths * 30.0f; // stars always starts with rotation based on month
+            }
+            else
+            {
+                srand(time(NULL));
+                aSkyboxes[i]->rot = rand() * (360.0f / (float)RAND_MAX);
+            }
+        }
+        aSkyboxes[i]->inUse = false; // reset flag
+    }
+
+    if (*WeatherRegion == eWeatherRegion::WEATHER_REGION_DEFAULT || *WeatherRegion == eWeatherRegion::WEATHER_REGION_DESERT)
+    {
+        inCityFactor -= 0.001f * *ms_fTimeStep * MAGIC_FLOAT;
+        if (inCityFactor < 0.0f) inCityFactor = 0.0f;
+    }
+    else
+    {
+        inCityFactor += 0.001f * *ms_fTimeStep * MAGIC_FLOAT;
+        if (inCityFactor > 1.0f) inCityFactor = 1.0f;
+    }
+
+    // Get stars alpha
+    float starsAlpha = 0.0f;
+    if (dayNightBalance > 0.0f)
+    {
+        float skyIllumination = (m_CurrentColours->skybotr + m_CurrentColours->skybotg + m_CurrentColours->skybotb + m_CurrentColours->skytopr + m_CurrentColours->skytopg + m_CurrentColours->skytopb) / 255.0f;
+        if (skyIllumination > 1.0f) skyIllumination = 1.0f;
+        starsAlpha = (1.0f - skyIllumination) * dayNightBalance;
+        starsAlpha -= 1.0f * (inCityFactor * (starsCityAlphaRemove / 2.0f));
+    }
+
+    // Next weather texture is different from current?
+    bool newTexIsDifferent = (aSkyboxes[oldWeatherType]->tex != aSkyboxes[newWeatherType]->tex);
+    if (!newTexIsDifferent)
+    {
+    	oldAlpha += newAlpha;
+    	if (oldAlpha > 255.0f) oldAlpha = 255.0f;
+    }
+
+    // Process rotation
+    if (false) //(CCheat::m_aCheatsActive[0xB]) // fast clock
+    {
+        aSkyboxes[oldWeatherType]->rot += 0.1f + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        if (newTexIsDifferent) aSkyboxes[newWeatherType]->rot += (0.1f * 0.7f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        aSkyboxes[WEATHER_FOR_STARS]->rot += 0.005f + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+    }
+    else
+    {
+        aSkyboxes[oldWeatherType]->rot += (cloudsRotationSpeed * 0.5f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        if (newTexIsDifferent) aSkyboxes[newWeatherType]->rot += (cloudsRotationSpeed * 0.5f * 0.7f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        aSkyboxes[WEATHER_FOR_STARS]->rot += (starsRotationSpeed * 0.5f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+    }
+    while (aSkyboxes[oldWeatherType]->rot > 360.0f) aSkyboxes[oldWeatherType]->rot -= 360.0f;
+    while (aSkyboxes[newWeatherType]->rot > 360.0f) aSkyboxes[newWeatherType]->rot -= 360.0f;
+    while (aSkyboxes[WEATHER_FOR_STARS]->rot > 360.0f) aSkyboxes[WEATHER_FOR_STARS]->rot -= 360.0f;
+    SetRotationForThisTexture(aSkyboxes[oldWeatherType]->tex, aSkyboxes[oldWeatherType]->rot);
+    if (newTexIsDifferent) SetRotationForThisTexture(aSkyboxes[newWeatherType]->tex, aSkyboxes[newWeatherType]->rot);
+
+    // Get Ilumination
+    float skyboxIllumination = ((m_CurrentColours->skybotr + m_CurrentColours->skybotg + m_CurrentColours->skybotb) * cloudsMultBrightness) / 255.0f;
+    if (skyboxIllumination > 1.0f) skyboxIllumination = 1.0f;
+    if (dayNightBalance != 0.0f && inCityFactor != 0.0f) skyboxIllumination -= (dayNightBalance / 12.0f) * (1.0f - inCityFactor);
+    float dayNightBalanceReverse = (1.0f - dayNightBalance);
+    if (dayNightBalanceReverse < cloudsNightDarkLimit) dayNightBalanceReverse = cloudsNightDarkLimit;
+    skyboxIllumination *= dayNightBalanceReverse;
+    if (skyboxIllumination < cloudsMinBrightness) skyboxIllumination = cloudsMinBrightness;
+    if (skyboxIllumination > 1.0f) skyboxIllumination = 1.0f;
+
+    // Get color
+    float sunriseFactor = 0.0f;
+    float sunHorizonFactor = m_VectorToSun[*m_CurrentStoredValue].z;
+    if (sunHorizonFactor > 0.0f)
+    {
+        if (sunHorizonFactor > 0.2f) sunHorizonFactor -= (sunHorizonFactor - 0.2f) * 2.0f; // 0.0 - 0.2 - 0.0
+        sunriseFactor = sunHorizonFactor * 10.0f;
+        if (sunriseFactor > 1.0f) sunriseFactor = 1.0f;
+        if (NoSunriseWeather((eWeatherType)oldWeatherType)) sunriseFactor -= (oldAlpha / 255.0f);
+        if (NoSunriseWeather((eWeatherType)newWeatherType)) sunriseFactor -= (newAlpha / 255.0f);
+        if (sunriseFactor > 0.0f)
+        {
+            sunriseFactor *= cloudsMultSunrise;
+            if (sunHorizonFactor > 0.0f) sunriseFactor += (abs(1.0f - sunHorizonFactor) * sunHorizonFactor);
+        }
+        else
+        {
+            sunriseFactor = 0.0f;
+        }
+    }
+    sunriseFactor += ((cloudsCityOrange / 4.0f) * inCityFactor) * dayNightBalance;
+
+    vecSkyColor =
+    {
+        skyboxIllumination,
+        (skyboxIllumination - (sunriseFactor / 16.0f)),
+        (skyboxIllumination - (sunriseFactor / 10.0f)),
+        1.0f,
+    };
+
+    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1u);
+    RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)1u);
+    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)skyboxFogType);
+    RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &fogDensity);
+
+    // Render skyboxes
+    if (starsAlpha > 0.0f) // Stars
+    {
+        RwFrameTranslate(pSkyFrame, &camPos, rwCOMBINEREPLACE);
+        RwFrameScale(pSkyFrame, &starsSkyboxScale, rwCOMBINEPRECONCAT);
+        RwFrameRotate(pSkyFrame, &ZAxis, aSkyboxes[WEATHER_FOR_STARS]->rot, rwCOMBINEPRECONCAT);
+        RwFrameUpdateObjects(pSkyFrame);
+
+        pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[WEATHER_FOR_STARS]->tex;
+        aSkyboxes[WEATHER_FOR_STARS]->inUse = true;
+
+        int finalAlpha = (int)(starsAlpha * 255.0f);
+        if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
+
+        SetFullAmbient();
+        DeActivateDirectional();
+        RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+    }
+
+    if (aSkyboxes[oldWeatherType]->tex && oldAlpha > 0.0f) // Old (current)
+    {
+        RwFrameTranslate(pSkyFrame, &camPos, rwCOMBINEREPLACE);
+        RwFrameScale(pSkyFrame, &oldSkyboxScale, rwCOMBINEPRECONCAT);
+        RwFrameRotate(pSkyFrame, &ZAxis, aSkyboxes[oldWeatherType]->rot, rwCOMBINEPRECONCAT);
+        RwFrameUpdateObjects(pSkyFrame);
+
+        pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[oldWeatherType]->tex;
+        SetInUseForThisTexture(aSkyboxes[oldWeatherType]->tex);
+
+        int finalAlpha = (int)oldAlpha;
+        if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
+
+        SetAmbientColours(&vecSkyColor);
+        DeActivateDirectional();
+        RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+    }
+
+    if (newTexIsDifferent && aSkyboxes[newWeatherType]->tex && newAlpha > 0.0f) // New (next)
+    {
+        RwFrameTranslate(pSkyFrame, &camPos, rwCOMBINEREPLACE);
+        RwFrameScale(pSkyFrame, &newSkyboxScale, rwCOMBINEPRECONCAT);
+        RwFrameRotate(pSkyFrame, &ZAxis, aSkyboxes[newWeatherType]->rot, rwCOMBINEPRECONCAT);
+        RwFrameUpdateObjects(pSkyFrame);
+
+        pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[newWeatherType]->tex;
+        SetInUseForThisTexture(aSkyboxes[newWeatherType]->tex);
+
+        int finalAlpha = (int)newAlpha;
+        if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
+
+        SetAmbientColours(&vecSkyColor);
+        DeActivateDirectional();
+        RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+    }
+
+    //RwFrameTranslate(pSkyFrame, &TheCamera->GetPosition(), rwCOMBINEREPLACE);
+    //CVector scale = CVector(0.3f, 0.3f, 0.3f);
+    //RwFrameScale(pSkyFrame, &scale, rwCOMBINEPRECONCAT);
+    //aSkyboxes[0]->rot = 0.001f * ((int)(*m_snTimeInMilliseconds) % 360000);
+    //RwFrameRotate(pSkyFrame, &ZAxis, aSkyboxes[0]->rot, rwCOMBINEPRECONCAT);
+    //RwFrameUpdateObjects(pSkyFrame);
+    //pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[0]->tex;
+
+    //SetAmbientColours(&vecSkyColor);
+    //DeActivateDirectional();
+    //RenderAtomicWithAlpha(pSkyAtomic, 255);
+
+    RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &gameDefaultFogDensity);
+    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)1);
+    RwRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -204,15 +448,15 @@ DECL_HOOKv(GameInit3, void* data)
 {
     GameInit3(data);
 
-    for (int i = 0; i < 21; ++i) { aSkyboxes[i] = new Skybox(); }
+    for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i) { aSkyboxes[i] = new Skybox(); }
 
     LoadSkyboxTextures();
     PrepareSkyboxModel();
 }
 DECL_HOOKv(RenderClouds)
 {
-    RenderClouds();
     RenderSkybox();
+    RenderClouds();
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -228,6 +472,18 @@ extern "C" void OnModPreLoad()
     // GTA Variables
     SET_TO(TheCamera,                       aml->GetSym(hGTASA, "TheCamera"));
     SET_TO(AtomicDefaultRenderCallBack,     aml->GetSym(hGTASA, "_Z27AtomicDefaultRenderCallBackP8RpAtomic"));
+    SET_TO(ms_fTimeScale,                   aml->GetSym(hGTASA, "_ZN6CTimer13ms_fTimeScaleE"));
+    SET_TO(ms_fTimeStep,                    aml->GetSym(hGTASA, "_ZN6CTimer12ms_fTimeStepE"));
+    SET_TO(UnderWaterness,                  aml->GetSym(hGTASA, "_ZN8CWeather14UnderWaternessE"));
+    SET_TO(InterpolationValue,              aml->GetSym(hGTASA, "_ZN8CWeather18InterpolationValueE"));
+    SET_TO(NewWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14NewWeatherTypeE"));
+    SET_TO(OldWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14OldWeatherTypeE"));
+    SET_TO(ms_nGameClockMonths,             aml->GetSym(hGTASA, "_ZN6CClock19ms_nGameClockMonthsE"));
+    SET_TO(m_bExtraColourOn,                aml->GetSym(hGTASA, "_ZN10CTimeCycle16m_bExtraColourOnE"));
+    SET_TO(m_CurrentStoredValue,            aml->GetSym(hGTASA, "_ZN10CTimeCycle20m_CurrentStoredValueE"));
+    SET_TO(WeatherRegion,                   aml->GetSym(hGTASA, "_ZN8CWeather13WeatherRegionE"));
+    SET_TO(m_CurrentColours,                aml->GetSym(hGTASA, "_ZN10CTimeCycle16m_CurrentColoursE"));
+    SET_TO(m_VectorToSun,                   aml->GetSym(hGTASA, "_ZN10CTimeCycle13m_VectorToSunE"));
 
     // GTA Functions
     SET_TO(RwStreamOpen,                    aml->GetSym(hGTASA, "_Z12RwStreamOpen12RwStreamType18RwStreamAccessTypePKv"));
@@ -258,16 +514,17 @@ extern "C" void OnModPreLoad()
     SET_TO(RwImageDestroy,                  aml->GetSym(hGTASA, "_Z14RwImageDestroyP7RwImage"));
     SET_TO(RwTextureCreate,                 aml->GetSym(hGTASA, "_Z15RwTextureCreateP8RwRaster"));
     SET_TO(RwTextureDestroy,                aml->GetSym(hGTASA, "_Z16RwTextureDestroyP9RwTexture"));
-    SET_TO(CFileMgr__SetDir,                aml->GetSym(hGTASA, "_ZN8CFileMgr6SetDirEPKc"));
-    SET_TO(CFileMgr__OpenFile,              aml->GetSym(hGTASA, "_ZN8CFileMgr8OpenFileEPKcS1_"));
-    SET_TO(CFileMgr__CloseFile,             aml->GetSym(hGTASA, "_ZN8CFileMgr9CloseFileEj"));
-    SET_TO(CFileLoader__LoadLine,           aml->GetSym(hGTASA, "_ZN11CFileLoader8LoadLineEj"));
     SET_TO(RwFrameTranslate,                aml->GetSym(hGTASA, "_Z16RwFrameTranslateP7RwFramePK5RwV3d15RwOpCombineType"));
     SET_TO(RwFrameScale,                    aml->GetSym(hGTASA, "_Z12RwFrameScaleP7RwFramePK5RwV3d15RwOpCombineType"));
-
-    // GTA Patches
-    //_BackTo = pGTASA + 0x + 0x1;
-    //aml->Redirect(pGTASA + 0x + 0x1, (uintptr_t)_inject);
+    SET_TO(RwFrameRotate,                   aml->GetSym(hGTASA, "_Z13RwFrameRotateP7RwFramePK5RwV3df15RwOpCombineType"));
+    SET_TO(TextureDatabaseLoad,             aml->GetSym(hGTASA, "_ZN22TextureDatabaseRuntime4LoadEPKcb21TextureDatabaseFormat"));
+    SET_TO(TextureDatabaseRegister,         aml->GetSym(hGTASA, "_ZN22TextureDatabaseRuntime8RegisterEPS_"));
+    SET_TO(TextureDatabaseUnregister,       aml->GetSym(hGTASA, "_ZN22TextureDatabaseRuntime10UnregisterEPS_"));
+    SET_TO(TextureDatabaseGetTexture,       aml->GetSym(hGTASA, "_ZN22TextureDatabaseRuntime10GetTextureEPKc"));
+    SET_TO(DeActivateDirectional,           aml->GetSym(hGTASA, "_Z21DeActivateDirectionalv"));
+    SET_TO(SetAmbientColours,               aml->GetSym(hGTASA, "_Z17SetAmbientColoursP10RwRGBAReal"));
+    SET_TO(SetFullAmbient,                  aml->GetSym(hGTASA, "_Z14SetFullAmbientv"));
+    SET_TO(RwRenderStateSet,                aml->GetSym(hGTASA, "_Z16RwRenderStateSet13RwRenderStatePv"));
     
     // GTA Hooks
     HOOK(GameInit3,                         aml->GetSym(hGTASA, "_ZN5CGame5Init3EPKc"));
