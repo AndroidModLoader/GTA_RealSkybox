@@ -6,11 +6,12 @@
 #include "GTASA_STRUCTS.h"
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 1.0, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.1, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.0.2.1)
 END_DEPLIST()
 
+//#define RENDER_MIRRORED
 #define MAGIC_FLOAT       (5.0f / 3.0f)
 #define WEATHER_FOR_STARS (eWeatherType::WEATHER_UNDERWATER)
 
@@ -26,12 +27,13 @@ CVector oldSkyboxScale, newSkyboxScale, starsSkyboxScale, cloudsRotationVector, 
 bool changeWeather = true, usingInterp = false, processedFirst = false;
 float testInterp = 0.0f, inCityFactor = 0.0f;
 CVector ZAxis(0.0f, 0.0f, 1.0f);
+CVector XYAxis(1.0f, 1.0f, 0.0f);
 RwRGBAReal vecSkyColor = {1.0f, 1.0f, 1.0f, 1.0f};
 float increaseRot = 0.0f;
 bool sunReflectionChanged = false, skyboxDrawAfter = true;
 float lastFarClip = 0.0f, minFarPlane = 1100.0f, gameDefaultFogDensity = 1.0f, fogDensityDefault = 0.0012f, fogDensity = fogDensityDefault;
 int skyboxFogType = 2;
-float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.2f, cloudsMultBrightness = 0.4f,
+float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.4f, cloudsMultBrightness = 0.4f,
       cloudsNightDarkLimit = 0.8f, cloudsMinBrightness = 0.05f, cloudsCityOrange = 1.0f, starsCityAlphaRemove = 0.8f, cloudsMultSunrise = 2.5f;
 
 /////////////////////////////////////////////////////////////////////////////
@@ -41,8 +43,8 @@ CCamera *TheCamera;
 RpAtomicCallBackRender AtomicDefaultRenderCallBack;
 float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue;
 uint32_t *m_snTimeInMilliseconds;
-uint16_t *NewWeatherType, *OldWeatherType;
-uint8_t *ms_nGameClockMonths;
+uint16_t *NewWeatherType, *OldWeatherType, *ForcedWeatherType;
+uint8_t *ms_nGameClockMonths, *ms_nGameClockHours;
 int *m_bExtraColourOn, *m_CurrentStoredValue;
 eWeatherRegion *WeatherRegion;
 CColourSet *m_CurrentColours;
@@ -223,6 +225,7 @@ void RenderSkybox()
 
     // Tweak by distance
     float farPlane = TheCamera->m_pRwCamera->farClip;
+    float scaleFactor = 0.95f * farPlane / pSkyAtomic->boundingSphere.radius / 0.4f;
     float goodDistanceFactor = (farPlane - 1000.0f) / 1000.0f; //  if farPlane is 2000.0, goodDistanceFactor is 2.0
     if (goodDistanceFactor < 0.01f) goodDistanceFactor = 0.01f;
 
@@ -240,9 +243,9 @@ void RenderSkybox()
         }
     }
 
-    oldSkyboxScale.x = skyboxSizeXY * goodDistanceFactor;
-    oldSkyboxScale.y = skyboxSizeXY * goodDistanceFactor;
-    oldSkyboxScale.z = skyboxSizeZ * goodDistanceFactor;
+    oldSkyboxScale.x = skyboxSizeXY * scaleFactor;//goodDistanceFactor;
+    oldSkyboxScale.y = skyboxSizeXY * scaleFactor;//goodDistanceFactor;
+    oldSkyboxScale.z = skyboxSizeZ  * scaleFactor;//goodDistanceFactor;
 
     newSkyboxScale.x = oldSkyboxScale.x * 1.05f;
     newSkyboxScale.y = oldSkyboxScale.y * 1.05f;
@@ -383,6 +386,16 @@ void RenderSkybox()
         int finalAlpha = (int)(starsAlpha * 255.0f);
         if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
 
+        #ifdef RENDER_MIRRORED
+            CVector mirrorCamPos = camPos;
+            mirrorCamPos.z -= 2.0f * scaleFactor * pSkyAtomic->boundingSphere.center.z;
+            RwFrameTranslate(pSkyFrame, &mirrorCamPos, rwCOMBINEREPLACE);
+            RwFrameRotate(pSkyFrame, &XYAxis, 180.0f, rwCOMBINEPRECONCAT);
+            RwFrameScale(pSkyFrame, &starsSkyboxScale, rwCOMBINEPRECONCAT);
+            RwFrameUpdateObjects(pSkyFrame);
+            RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+        #endif
+
         SetFullAmbient();
         DeActivateDirectional();
         RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
@@ -400,6 +413,16 @@ void RenderSkybox()
 
         int finalAlpha = (int)oldAlpha;
         if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
+
+        #ifdef RENDER_MIRRORED
+            CVector mirrorCamPos = camPos;
+            mirrorCamPos.z -= 2.0f * scaleFactor * pSkyAtomic->boundingSphere.center.z;
+            RwFrameTranslate(pSkyFrame, &mirrorCamPos, rwCOMBINEREPLACE);
+            RwFrameRotate(pSkyFrame, &XYAxis, 180.0f, rwCOMBINEPRECONCAT);
+            RwFrameScale(pSkyFrame, &oldSkyboxScale, rwCOMBINEPRECONCAT);
+            RwFrameUpdateObjects(pSkyFrame);
+            RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+        #endif
 
         SetAmbientColours(&vecSkyColor);
         DeActivateDirectional();
@@ -419,22 +442,20 @@ void RenderSkybox()
         int finalAlpha = (int)newAlpha;
         if (skyboxFogType <= 1 && *UnderWaterness > 0.4f) finalAlpha /= 1.0f + ((*UnderWaterness - 0.4f) * 100.0f);
 
+        #ifdef RENDER_MIRRORED
+            CVector mirrorCamPos = camPos;
+            mirrorCamPos.z -= 2.0f * scaleFactor * pSkyAtomic->boundingSphere.center.z;
+            RwFrameTranslate(pSkyFrame, &mirrorCamPos, rwCOMBINEREPLACE);
+            RwFrameRotate(pSkyFrame, &XYAxis, 180.0f, rwCOMBINEPRECONCAT);
+            RwFrameScale(pSkyFrame, &newSkyboxScale, rwCOMBINEPRECONCAT);
+            RwFrameUpdateObjects(pSkyFrame);
+            RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
+        #endif
+
         SetAmbientColours(&vecSkyColor);
         DeActivateDirectional();
         RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
     }
-
-    //RwFrameTranslate(pSkyFrame, &TheCamera->GetPosition(), rwCOMBINEREPLACE);
-    //CVector scale = CVector(0.3f, 0.3f, 0.3f);
-    //RwFrameScale(pSkyFrame, &scale, rwCOMBINEPRECONCAT);
-    //aSkyboxes[0]->rot = 0.001f * ((int)(*m_snTimeInMilliseconds) % 360000);
-    //RwFrameRotate(pSkyFrame, &ZAxis, aSkyboxes[0]->rot, rwCOMBINEPRECONCAT);
-    //RwFrameUpdateObjects(pSkyFrame);
-    //pSkyAtomic->geometry->matList.materials[0]->texture = aSkyboxes[0]->tex;
-
-    //SetAmbientColours(&vecSkyColor);
-    //DeActivateDirectional();
-    //RenderAtomicWithAlpha(pSkyAtomic, 255);
 
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &gameDefaultFogDensity);
     RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)1);
@@ -458,6 +479,37 @@ DECL_HOOKv(RenderClouds)
     RenderSkybox();
     RenderClouds();
 }
+DECL_HOOKv(GameLogicPassTime, unsigned int time)
+{
+    if (TheCamera->m_fFloatingFade > 160.0f)
+    {
+        int oldWeatherType = *OldWeatherType;
+        int newWeatherType = *NewWeatherType;
+        if (oldWeatherType > eWeatherType::WEATHER_UNDERWATER) oldWeatherType = eWeatherType::WEATHER_SUNNY_LA;
+        if (newWeatherType > eWeatherType::WEATHER_UNDERWATER) newWeatherType = eWeatherType::WEATHER_SUNNY_LA;
+
+        float fTime = log10((float)time) * 100.0f;
+        aSkyboxes[oldWeatherType]->rot += (0.1f + fTime) * (*ms_fTimeStep * MAGIC_FLOAT);
+        aSkyboxes[newWeatherType]->rot += ((0.1f * 0.7f) + fTime) * (*ms_fTimeStep * MAGIC_FLOAT);
+        aSkyboxes[WEATHER_FOR_STARS]->rot += (0.005f + fTime) * (*ms_fTimeStep * MAGIC_FLOAT);
+    }
+    else
+    {
+        if (*m_bExtraColourOn == 0 && *OldWeatherType != eWeatherType::WEATHER_UNDERWATER && *NewWeatherType != eWeatherType::WEATHER_UNDERWATER && *ForcedWeatherType != eWeatherType::WEATHER_UNDERWATER)
+        {
+            float fTime = log10((float)time) * (*ms_fTimeStep * MAGIC_FLOAT);
+
+            float increaseLimitMin = 0.1f * (*ms_fTimeStep * MAGIC_FLOAT);
+            if (fTime < increaseLimitMin) fTime = increaseLimitMin;
+
+            increaseRot += fTime;
+
+            float increaseLimitMax = fTime * 0.5f * (*ms_fTimeStep * MAGIC_FLOAT);
+            if (increaseRot > increaseLimitMax) increaseRot = increaseLimitMax;
+        }
+    }
+    GameLogicPassTime(time);
+}
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Main     ////////////////////////////////
@@ -478,7 +530,9 @@ extern "C" void OnModPreLoad()
     SET_TO(InterpolationValue,              aml->GetSym(hGTASA, "_ZN8CWeather18InterpolationValueE"));
     SET_TO(NewWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14NewWeatherTypeE"));
     SET_TO(OldWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14OldWeatherTypeE"));
+    SET_TO(ForcedWeatherType,               aml->GetSym(hGTASA, "_ZN8CWeather17ForcedWeatherTypeE"));
     SET_TO(ms_nGameClockMonths,             aml->GetSym(hGTASA, "_ZN6CClock19ms_nGameClockMonthsE"));
+    SET_TO(ms_nGameClockHours,              aml->GetSym(hGTASA, "_ZN6CClock18ms_nGameClockHoursE"));
     SET_TO(m_bExtraColourOn,                aml->GetSym(hGTASA, "_ZN10CTimeCycle16m_bExtraColourOnE"));
     SET_TO(m_CurrentStoredValue,            aml->GetSym(hGTASA, "_ZN10CTimeCycle20m_CurrentStoredValueE"));
     SET_TO(WeatherRegion,                   aml->GetSym(hGTASA, "_ZN8CWeather13WeatherRegionE"));
@@ -529,4 +583,5 @@ extern "C" void OnModPreLoad()
     // GTA Hooks
     HOOK(GameInit3,                         aml->GetSym(hGTASA, "_ZN5CGame5Init3EPKc"));
     HOOK(RenderClouds,                      aml->GetSym(hGTASA, "_ZN7CClouds6RenderEv"));
+    HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
 }
