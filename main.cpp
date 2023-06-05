@@ -1,18 +1,20 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
+#include <mod/config.h>
 #include <cstdio>
 #include <ctime>
 
 #include "GTASA_STRUCTS.h"
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.1, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.2, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.0.2.1)
 END_DEPLIST()
+Config* cfg = new Config("RealSkybox.SA");
 
 //#define RENDER_MIRRORED
-#define MAGIC_FLOAT       (5.0f / 3.0f)
+#define MAGIC_FLOAT       (float)(50.0 / 30.0)
 #define WEATHER_FOR_STARS (eWeatherType::WEATHER_UNDERWATER)
 
 /////////////////////////////////////////////////////////////////////////////
@@ -49,6 +51,7 @@ int *m_bExtraColourOn, *m_CurrentStoredValue;
 eWeatherRegion *WeatherRegion;
 CColourSet *m_CurrentColours;
 CVector *m_VectorToSun;
+bool *m_aCheatsActive;
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Funcs     ///////////////////////////////
@@ -112,14 +115,14 @@ RwTexture* SAUtils__LoadRwTextureFromPNG(const char* fn)
     }
     return pTexture;
 }
-RwTexture* GetTexIfLoaded(const char* name)
+/*RwTexture* GetTexIfLoaded(const char* name)
 {
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
     {
         if(aSkyboxes[i]->tex && !strncmp(aSkyboxes[i]->tex->name, name, rwTEXTUREBASENAMELENGTH)) return aSkyboxes[i]->tex;
     }
     return NULL;
-}
+}*/
 void LoadSkyboxTextures()
 {
     const char* szStartPath = "realskybox/tex/";
@@ -151,8 +154,8 @@ void LoadSkyboxTextures()
         if((sscanf(line, "%d, %s", &weatherId, (char*)&textureName) == 2 || 
             sscanf(line, "%d %s", &weatherId, (char*)&textureName) == 2) && weatherId <= WEATHER_FOR_STARS)
         {
-            aSkyboxes[weatherId]->tex = GetTexIfLoaded(textureName);
-            if (!aSkyboxes[weatherId]->tex)
+            //aSkyboxes[weatherId]->tex = GetTexIfLoaded(textureName);
+            //if (!aSkyboxes[weatherId]->tex)
             {
                 aSkyboxes[weatherId]->tex = TextureDatabaseGetTexture(textureName);
                 if (aSkyboxes[weatherId]->tex)
@@ -309,7 +312,7 @@ void RenderSkybox()
     }
 
     // Process rotation
-    if (false) //(CCheat::m_aCheatsActive[0xB]) // fast clock
+    if (m_aCheatsActive[0x13]) // fast clock
     {
         aSkyboxes[oldWeatherType]->rot += 0.1f + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
         if (newTexIsDifferent) aSkyboxes[newWeatherType]->rot += (0.1f * 0.7f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
@@ -476,8 +479,9 @@ DECL_HOOKv(GameInit3, void* data)
 }
 DECL_HOOKv(RenderClouds)
 {
-    RenderSkybox();
+    if(!skyboxDrawAfter) RenderSkybox();
     RenderClouds();
+    if( skyboxDrawAfter) RenderSkybox();
 }
 DECL_HOOKv(GameLogicPassTime, unsigned int time)
 {
@@ -538,6 +542,7 @@ extern "C" void OnModPreLoad()
     SET_TO(WeatherRegion,                   aml->GetSym(hGTASA, "_ZN8CWeather13WeatherRegionE"));
     SET_TO(m_CurrentColours,                aml->GetSym(hGTASA, "_ZN10CTimeCycle16m_CurrentColoursE"));
     SET_TO(m_VectorToSun,                   aml->GetSym(hGTASA, "_ZN10CTimeCycle13m_VectorToSunE"));
+    SET_TO(m_aCheatsActive,                 aml->GetSym(hGTASA, "_ZN6CCheat15m_aCheatsActiveE"));
 
     // GTA Functions
     SET_TO(RwStreamOpen,                    aml->GetSym(hGTASA, "_Z12RwStreamOpen12RwStreamType18RwStreamAccessTypePKv"));
@@ -584,4 +589,40 @@ extern "C" void OnModPreLoad()
     HOOK(GameInit3,                         aml->GetSym(hGTASA, "_ZN5CGame5Init3EPKc"));
     HOOK(RenderClouds,                      aml->GetSym(hGTASA, "_ZN7CClouds6RenderEv"));
     HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
+}
+
+extern "C" void Stub(...) {}
+
+extern "C" void OnModLoad()
+{
+    //minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
+    if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
+    {
+        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident.
+    }
+    if(cfg->GetBool("NoHorizonClouds", false, "Game tweaks"))
+    {
+        aml->Redirect(pGTASA + 0x59F338 + 0x1, pGTASA + 0x59F40A + 0x1);
+    }
+    if(cfg->GetBool("NoVolumetricClouds", false, "Game tweaks"))
+    {
+        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22RenderBottomFromHeightEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident.
+    }
+    if(cfg->GetBool("NoVanillaStars", false, "Game tweaks"))
+    {
+        aml->Redirect(pGTASA + 0x59F002 + 0x1, pGTASA + 0x59F20A + 0x1);
+    }
+    
+    skyboxDrawAfter = cfg->GetBool("SkyboxDrawAfter", skyboxDrawAfter, "Skybox");
+    fogDensityDefault = cfg->GetFloat("SkyboxFogDistance", fogDensityDefault, "Skybox");
+    cloudsRotationSpeed = cfg->GetFloat("CloudsRotationSpeed", cloudsRotationSpeed, "Skybox");
+    starsRotationSpeed = cfg->GetFloat("StarsRotationSpeed", starsRotationSpeed, "Skybox");
+    skyboxSizeXY = cfg->GetFloat("SkyboxSizeXY", skyboxSizeXY, "Skybox");
+    skyboxSizeZ = cfg->GetFloat("SkyboxSizeZ", skyboxSizeZ, "Skybox");
+    cloudsMultBrightness = cfg->GetFloat("CloudsMultBrightness", cloudsMultBrightness, "Skybox");
+    cloudsNightDarkLimit = cfg->GetFloat("CloudsNightDarkLimit", cloudsNightDarkLimit, "Skybox");
+    cloudsMinBrightness = cfg->GetFloat("CloudsMinBrightness", cloudsMinBrightness, "Skybox");
+    cloudsMultSunrise = cfg->GetFloat("CloudsMultSunrise", cloudsMultSunrise, "Skybox");
+    cloudsCityOrange = cfg->GetFloat("CloudsCityOrange", cloudsCityOrange, "Skybox");
+    starsCityAlphaRemove = cfg->GetFloat("StarsCityAlphaRemove", starsCityAlphaRemove, "Skybox");
 }
