@@ -595,6 +595,7 @@ extern "C" void Stub(...) {}
 
 extern "C" void OnModLoad()
 {
+    // This one below doesnt work. Yet?
     //minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
     if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
     {
@@ -614,6 +615,7 @@ extern "C" void OnModLoad()
     }
     
     skyboxDrawAfter = cfg->GetBool("SkyboxDrawAfter", skyboxDrawAfter, "Skybox");
+    skyboxFogType = cfg->GetInt("SkyboxFogType", skyboxFogType, "Skybox");
     fogDensityDefault = cfg->GetFloat("SkyboxFogDistance", fogDensityDefault, "Skybox");
     cloudsRotationSpeed = cfg->GetFloat("CloudsRotationSpeed", cloudsRotationSpeed, "Skybox");
     starsRotationSpeed = cfg->GetFloat("StarsRotationSpeed", starsRotationSpeed, "Skybox");
