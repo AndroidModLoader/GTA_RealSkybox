@@ -4,10 +4,17 @@
 #include <cstdio>
 #include <ctime>
 
-#include "GTASA_STRUCTS.h"
+#ifdef AML32
+    #include "GTASA_STRUCTS.h"
+    #define BYVER(__for32, __for64) (__for32)
+#else
+    #include "GTASA_STRUCTS_210.h"
+    #define BYVER(__for32, __for64) (__for64)
+#endif
+#define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.2, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.3, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.0.2.1)
 END_DEPLIST()
@@ -31,8 +38,8 @@ float testInterp = 0.0f, inCityFactor = 0.0f;
 CVector ZAxis(0.0f, 0.0f, 1.0f);
 CVector XYAxis(1.0f, 1.0f, 0.0f);
 RwRGBAReal vecSkyColor = {1.0f, 1.0f, 1.0f, 1.0f};
-float increaseRot = 0.0f;
-bool sunReflectionChanged = false, skyboxDrawAfter = true;
+float increaseRot = 0.0f, windStrengthRot = 0.0f, windRotScale = 0.006f;
+bool sunReflectionChanged = false, skyboxDrawAfter = true, windStrengthAffectsRotation = true;
 float lastFarClip = 0.0f, minFarPlane = 1100.0f, gameDefaultFogDensity = 1.0f, fogDensityDefault = 0.0012f, fogDensity = fogDensityDefault;
 int skyboxFogType = 2;
 float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.4f, cloudsMultBrightness = 0.4f,
@@ -43,7 +50,7 @@ float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY =
 /////////////////////////////////////////////////////////////////////////////
 CCamera *TheCamera;
 RpAtomicCallBackRender AtomicDefaultRenderCallBack;
-float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue;
+float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue, *Wind;
 uint32_t *m_snTimeInMilliseconds;
 uint16_t *NewWeatherType, *OldWeatherType, *ForcedWeatherType;
 uint8_t *ms_nGameClockMonths, *ms_nGameClockHours;
@@ -99,22 +106,6 @@ void            (*RwRenderStateSet)(RwRenderState, void *);
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Funcs     ///////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-RwTexture* SAUtils__LoadRwTextureFromPNG(const char* fn)
-{
-    RwTexture* pTexture = NULL;
-    if (RwImage* pImage = RtPNGImageRead(fn))
-    {
-        int width, height, depth, flags;
-        RwImageFindRasterFormat(pImage, rwRASTERTYPETEXTURE, &width, &height, &depth, &flags);
-        if (RwRaster* pRaster = RwRasterCreate(width, height, depth, flags))
-        {
-            RwRasterSetFromImage(pRaster, pImage);
-            pTexture = RwTextureCreate(pRaster);
-        }
-        RwImageDestroy(pImage);
-    }
-    return pTexture;
-}
 /*RwTexture* GetTexIfLoaded(const char* name)
 {
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
@@ -132,6 +123,7 @@ void LoadSkyboxTextures()
     bool bStartLoading = false;
     int weatherId = 0;
 
+    // Loading ONLY DXT because it's unpixelated and looks way more better!
     TextureDatabase* tdb = TextureDatabaseLoad("realskybox", false, DF_DXT);
     if(!tdb) return;
 
@@ -184,6 +176,7 @@ void PrepareSkyboxModel()
 
                 if (atomic)
                 {
+                    atomic->geometry->flags |= rpGEOMETRYMODULATEMATERIALCOLOR;
                     pSkyAtomic = atomic;
                     pSkyFrame = RwFrameCreate();
                     RpAtomicSetFrame(pSkyAtomic, pSkyFrame);
@@ -307,8 +300,8 @@ void RenderSkybox()
     bool newTexIsDifferent = (aSkyboxes[oldWeatherType]->tex != aSkyboxes[newWeatherType]->tex);
     if (!newTexIsDifferent)
     {
-    	oldAlpha += newAlpha;
-    	if (oldAlpha > 255.0f) oldAlpha = 255.0f;
+        oldAlpha += newAlpha;
+        if (oldAlpha > 255.0f) oldAlpha = 255.0f;
     }
 
     // Process rotation
@@ -320,8 +313,11 @@ void RenderSkybox()
     }
     else
     {
-        aSkyboxes[oldWeatherType]->rot += (cloudsRotationSpeed * 0.5f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
-        if (newTexIsDifferent) aSkyboxes[newWeatherType]->rot += (cloudsRotationSpeed * 0.5f * 0.7f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        if(windStrengthAffectsRotation) windStrengthRot = *Wind * windRotScale;
+        else windStrengthRot = 0;
+
+        aSkyboxes[oldWeatherType]->rot += (cloudsRotationSpeed * 0.5f) + (increaseRot + windStrengthRot) * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
+        if (newTexIsDifferent) aSkyboxes[newWeatherType]->rot += (cloudsRotationSpeed * 0.5f * 0.7f) + (increaseRot + windStrengthRot) * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
         aSkyboxes[WEATHER_FOR_STARS]->rot += (starsRotationSpeed * 0.5f) + increaseRot * *ms_fTimeScale * (*ms_fTimeStep * MAGIC_FLOAT);
     }
     while (aSkyboxes[oldWeatherType]->rot > 360.0f) aSkyboxes[oldWeatherType]->rot -= 360.0f;
@@ -370,9 +366,9 @@ void RenderSkybox()
         1.0f,
     };
 
-    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)1u);
-    RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)1u);
-    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)skyboxFogType);
+    RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)true);
+    RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)true);
+    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)(intptr_t)skyboxFogType); // warning: cast to 'void *' from smaller integer type 'int'
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &fogDensity);
 
     // Render skyboxes
@@ -401,6 +397,7 @@ void RenderSkybox()
 
         SetFullAmbient();
         DeActivateDirectional();
+        pSkyAtomic->geometry->matList.materials[0]->color.alpha = finalAlpha;
         RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
     }
 
@@ -429,6 +426,7 @@ void RenderSkybox()
 
         SetAmbientColours(&vecSkyColor);
         DeActivateDirectional();
+        pSkyAtomic->geometry->matList.materials[0]->color.alpha = finalAlpha;
         RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
     }
 
@@ -457,25 +455,28 @@ void RenderSkybox()
 
         SetAmbientColours(&vecSkyColor);
         DeActivateDirectional();
+        pSkyAtomic->geometry->matList.materials[0]->color.alpha = finalAlpha;
         RenderAtomicWithAlpha(pSkyAtomic, finalAlpha);
     }
 
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &gameDefaultFogDensity);
-    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)1);
-    RwRenderStateSet(rwRENDERSTATEFOGENABLE, 0);
+    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)true);
+    RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)false);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Hooks     ///////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-DECL_HOOKv(GameInit3, void* data)
+DECL_HOOK(bool, GameInit3, void* data)
 {
-    GameInit3(data);
+    bool ret = GameInit3(data);
 
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i) { aSkyboxes[i] = new Skybox(); }
 
     LoadSkyboxTextures();
     PrepareSkyboxModel();
+
+    return ret;
 }
 DECL_HOOKv(RenderClouds)
 {
@@ -532,6 +533,7 @@ extern "C" void OnModPreLoad()
     SET_TO(ms_fTimeStep,                    aml->GetSym(hGTASA, "_ZN6CTimer12ms_fTimeStepE"));
     SET_TO(UnderWaterness,                  aml->GetSym(hGTASA, "_ZN8CWeather14UnderWaternessE"));
     SET_TO(InterpolationValue,              aml->GetSym(hGTASA, "_ZN8CWeather18InterpolationValueE"));
+    SET_TO(Wind,                            aml->GetSym(hGTASA, "_ZN8CWeather4WindE"));
     SET_TO(NewWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14NewWeatherTypeE"));
     SET_TO(OldWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14OldWeatherTypeE"));
     SET_TO(ForcedWeatherType,               aml->GetSym(hGTASA, "_ZN8CWeather17ForcedWeatherTypeE"));
@@ -586,12 +588,14 @@ extern "C" void OnModPreLoad()
     SET_TO(RwRenderStateSet,                aml->GetSym(hGTASA, "_Z16RwRenderStateSet13RwRenderStatePv"));
     
     // GTA Hooks
-    HOOK(GameInit3,                         aml->GetSym(hGTASA, "_ZN5CGame5Init3EPKc"));
-    HOOK(RenderClouds,                      aml->GetSym(hGTASA, "_ZN7CClouds6RenderEv"));
+    HOOKPLT(GameInit3,                      pGTASA + BYVER(0x6742F0, 0x8470F0));
+    HOOKPLT(RenderClouds,                   pGTASA + BYVER(0x672FFC, 0x8451A0));
+    #ifdef AML32
+    HOOKPLT(GameLogicPassTime,              pGTASA + 0x66F620);
+    #else
     HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
+    #endif
 }
-
-extern "C" void Stub(...) {}
 
 extern "C" void OnModLoad()
 {
@@ -599,19 +603,19 @@ extern "C" void OnModLoad()
     //minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
     if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
     {
-        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident.
+        aml->PlaceRET(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv")); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
     }
     if(cfg->GetBool("NoHorizonClouds", false, "Game tweaks"))
     {
-        aml->Redirect(pGTASA + 0x59F338 + 0x1, pGTASA + 0x59F40A + 0x1);
+        aml->PlaceB(pGTASA + BYVER(0x59F338 + 0x1, 0x6C32D4), pGTASA + BYVER(0x59F40A + 0x1, 0x6C3380));
     }
     if(cfg->GetBool("NoVolumetricClouds", false, "Game tweaks"))
     {
-        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22RenderBottomFromHeightEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident.
+        aml->PlaceRET(aml->GetSym(hGTASA, "_ZN7CClouds22RenderBottomFromHeightEv")); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
     }
     if(cfg->GetBool("NoVanillaStars", false, "Game tweaks"))
     {
-        aml->Redirect(pGTASA + 0x59F002 + 0x1, pGTASA + 0x59F20A + 0x1);
+        aml->PlaceB(pGTASA + BYVER(0x59F002 + 0x1, 0x6C2FDC), pGTASA + BYVER(0x59F20A + 0x1, 0x6C30EC));
     }
     
     skyboxDrawAfter = cfg->GetBool("SkyboxDrawAfter", skyboxDrawAfter, "Skybox");
@@ -627,4 +631,8 @@ extern "C" void OnModLoad()
     cloudsMultSunrise = cfg->GetFloat("CloudsMultSunrise", cloudsMultSunrise, "Skybox");
     cloudsCityOrange = cfg->GetFloat("CloudsCityOrange", cloudsCityOrange, "Skybox");
     starsCityAlphaRemove = cfg->GetFloat("StarsCityAlphaRemove", starsCityAlphaRemove, "Skybox");
+
+    // A new feature
+    windStrengthAffectsRotation = cfg->GetBool("WindAffectsRotationSpeed", windStrengthAffectsRotation, "Skybox");
+    windRotScale = cfg->GetFloat("WindRotationScale", windRotScale, "Skybox");
 }

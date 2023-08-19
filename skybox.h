@@ -1,5 +1,3 @@
-#include "GTASA_STRUCTS.h"
-
 class Skybox
 {
 public:
