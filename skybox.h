@@ -1,13 +1,14 @@
 class Skybox
 {
 public:
-    bool inUse;
     RwTexture *tex;
     float rot;
+    bool inUse;
+
     Skybox()
     {
         inUse = false;
-        tex = NULL;
-        rot = 0.0f;
+        tex =   NULL;
+        rot =   0.0f;
     }
 };

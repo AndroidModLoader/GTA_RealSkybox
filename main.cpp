@@ -14,9 +14,9 @@
 #define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.3, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.4, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
-    ADD_DEPENDENCY_VER(net.rusjj.aml, 1.0.2.1)
+    ADD_DEPENDENCY_VER(net.rusjj.aml, 1.2.1)
 END_DEPLIST()
 Config* cfg = new Config("RealSkybox.SA");
 
@@ -33,7 +33,7 @@ RpAtomic* pSkyAtomic = NULL;
 RwFrame* pSkyFrame = NULL;
 Skybox *aSkyboxes[eWeatherType::WEATHER_UNDERWATER + 1];
 CVector oldSkyboxScale, newSkyboxScale, starsSkyboxScale, cloudsRotationVector, starsRotationVector;
-bool changeWeather = true, usingInterp = false, processedFirst = false;
+bool changeWeather = true, usingInterp = false, processedFirst = false, skyScaleAsOnPC = false;
 float testInterp = 0.0f, inCityFactor = 0.0f;
 CVector ZAxis(0.0f, 0.0f, 1.0f);
 CVector XYAxis(1.0f, 1.0f, 0.0f);
@@ -42,7 +42,7 @@ float increaseRot = 0.0f, windStrengthRot = 0.0f, windRotScale = 0.006f;
 bool sunReflectionChanged = false, skyboxDrawAfter = true, windStrengthAffectsRotation = true;
 float lastFarClip = 0.0f, minFarPlane = 1100.0f, gameDefaultFogDensity = 1.0f, fogDensityDefault = 0.0012f, fogDensity = fogDensityDefault;
 int skyboxFogType = 2;
-float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.4f, cloudsMultBrightness = 0.4f,
+float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY = 0.4f, skyboxSizeZ = 0.2f, cloudsMultBrightness = 0.4f,
       cloudsNightDarkLimit = 0.8f, cloudsMinBrightness = 0.05f, cloudsCityOrange = 1.0f, starsCityAlphaRemove = 0.8f, cloudsMultSunrise = 2.5f;
 
 /////////////////////////////////////////////////////////////////////////////
@@ -50,8 +50,8 @@ float cloudsRotationSpeed = 0.002f, starsRotationSpeed = 0.0002f, skyboxSizeXY =
 /////////////////////////////////////////////////////////////////////////////
 CCamera *TheCamera;
 RpAtomicCallBackRender AtomicDefaultRenderCallBack;
-float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue, *Wind;
-uint32_t *m_snTimeInMilliseconds;
+float *ms_fTimeScale, *ms_fTimeStep, *UnderWaterness, *InterpolationValue, *Wind, *currentFarClip;
+uint32_t *TempBufferIndicesStored, *TempBufferVerticesStored;
 uint16_t *NewWeatherType, *OldWeatherType, *ForcedWeatherType;
 uint8_t *ms_nGameClockMonths, *ms_nGameClockHours;
 int *m_bExtraColourOn, *m_CurrentStoredValue;
@@ -221,7 +221,8 @@ void RenderSkybox()
 
     // Tweak by distance
     float farPlane = TheCamera->m_pRwCamera->farClip;
-    float scaleFactor = 0.95f * farPlane / pSkyAtomic->boundingSphere.radius / 0.4f;
+    //float scaleFactor = 0.95f * farPlane / pSkyAtomic->boundingSphere.radius / 0.4f; // old
+    float scaleFactor = 1.1f * farPlane / pSkyAtomic->boundingSphere.radius;
     float goodDistanceFactor = (farPlane - 1000.0f) / 1000.0f; //  if farPlane is 2000.0, goodDistanceFactor is 2.0
     if (goodDistanceFactor < 0.01f) goodDistanceFactor = 0.01f;
 
@@ -239,9 +240,12 @@ void RenderSkybox()
         }
     }
 
-    oldSkyboxScale.x = skyboxSizeXY * scaleFactor;//goodDistanceFactor;
-    oldSkyboxScale.y = skyboxSizeXY * scaleFactor;//goodDistanceFactor;
-    oldSkyboxScale.z = skyboxSizeZ  * scaleFactor;//goodDistanceFactor;
+    oldSkyboxScale.x = skyboxSizeXY;
+    oldSkyboxScale.y = skyboxSizeXY;
+    oldSkyboxScale.z = skyboxSizeZ;
+    
+    // new in 0.4
+    oldSkyboxScale *= skyScaleAsOnPC ? goodDistanceFactor : scaleFactor;
 
     newSkyboxScale.x = oldSkyboxScale.x * 1.05f;
     newSkyboxScale.y = oldSkyboxScale.y * 1.05f;
@@ -460,29 +464,59 @@ void RenderSkybox()
     }
 
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &gameDefaultFogDensity);
-    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)true);
+    RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)1);
     RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)false);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Hooks     ///////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-DECL_HOOK(bool, GameInit3, void* data)
+uint32_t sunReflectionsCount = 20;
+uint32_t minFarClipPatchValue = 1440; // default
+DECL_HOOKb(GameInit3, void* data)
 {
-    bool ret = GameInit3(data);
+    GameInit3(data);
 
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i) { aSkyboxes[i] = new Skybox(); }
 
     LoadSkyboxTextures();
     PrepareSkyboxModel();
 
-    return ret;
+    return true;
 }
 DECL_HOOKv(RenderClouds)
 {
     if(!skyboxDrawAfter) RenderSkybox();
     RenderClouds();
     if( skyboxDrawAfter) RenderSkybox();
+}
+DECL_HOOKv(TimecycUpdate)
+{
+    TimecycUpdate();
+
+    if (*m_bExtraColourOn == 0 && *OldWeatherType != eWeatherType::WEATHER_UNDERWATER && *NewWeatherType != eWeatherType::WEATHER_UNDERWATER && *ForcedWeatherType != eWeatherType::WEATHER_UNDERWATER && *UnderWaterness < 0.4f)
+    {
+        if (*currentFarClip < minFarPlane)
+        {
+            *currentFarClip = minFarPlane;
+        }
+
+        // sunReflectionChanged is IF IT WAS PATCHED ALREADY (some limit adjuster?) <- false for us, always
+        if (lastFarClip != *currentFarClip && !sunReflectionChanged)
+        {
+            // default is 1440 for 20:
+            sunReflectionsCount = 20 * (*currentFarClip / 1000.0f);
+            minFarClipPatchValue = 72 * sunReflectionsCount;
+        }
+        lastFarClip = *currentFarClip;
+    }
+}
+DECL_HOOKv(SetRenderState_SunRefl, void* state, void* value)
+{
+    SetRenderState_SunRefl(state, value);
+    
+    *TempBufferVerticesStored = 4 + sunReflectionsCount * 2;
+    *TempBufferIndicesStored = 6 + sunReflectionsCount * 6;
 }
 DECL_HOOKv(GameLogicPassTime, unsigned int time)
 {
@@ -515,6 +549,23 @@ DECL_HOOKv(GameLogicPassTime, unsigned int time)
     }
     GameLogicPassTime(time);
 }
+uintptr_t MinFarClip_Continue, MinFarClip_Break;
+extern "C" uintptr_t MinFarClip_Inject(int val)
+{
+    return (val < minFarClipPatchValue) ? MinFarClip_Continue : MinFarClip_Break;
+}
+__attribute__((optnone)) __attribute__((naked)) void MinFarClip_Patch(void)
+{
+    asm("VSTR S2, [R0, #0xB8]");
+    asm("VSTR S20, [R0, #0xBC]");
+    asm("PUSH {R0-R3}");
+    asm("MOV R0, R10");
+    asm("BL MinFarClip_Inject");
+    asm("MOV R12, R0");
+    asm("POP {R0-R3}");
+    asm("BX R12");
+}
+extern "C" void Stub(...) {}
 
 /////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////     Main     ////////////////////////////////
@@ -534,6 +585,9 @@ extern "C" void OnModPreLoad()
     SET_TO(UnderWaterness,                  aml->GetSym(hGTASA, "_ZN8CWeather14UnderWaternessE"));
     SET_TO(InterpolationValue,              aml->GetSym(hGTASA, "_ZN8CWeather18InterpolationValueE"));
     SET_TO(Wind,                            aml->GetSym(hGTASA, "_ZN8CWeather4WindE"));
+    SET_TO(currentFarClip,                  pGTASA + BYVER(0x96659C, 0xBD7618));
+    SET_TO(TempBufferVerticesStored,        aml->GetSym(hGTASA, "TempBufferVerticesStored"));
+    SET_TO(TempBufferIndicesStored,         aml->GetSym(hGTASA, "TempBufferIndicesStored"));
     SET_TO(NewWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14NewWeatherTypeE"));
     SET_TO(OldWeatherType,                  aml->GetSym(hGTASA, "_ZN8CWeather14OldWeatherTypeE"));
     SET_TO(ForcedWeatherType,               aml->GetSym(hGTASA, "_ZN8CWeather17ForcedWeatherTypeE"));
@@ -590,20 +644,25 @@ extern "C" void OnModPreLoad()
     // GTA Hooks
     HOOKPLT(GameInit3,                      pGTASA + BYVER(0x6742F0, 0x8470F0));
     HOOKPLT(RenderClouds,                   pGTASA + BYVER(0x672FFC, 0x8451A0));
+    HOOKPLT(TimecycUpdate,                  pGTASA + BYVER(0x673A5C, 0x8462B0));
     #ifdef AML32
-    HOOKPLT(GameLogicPassTime,              pGTASA + 0x66F620);
+        HOOKPLT(GameLogicPassTime,          pGTASA + 0x66F620);
+        MinFarClip_Continue =               pGTASA + 0x5A3598 + 0x1;
+        MinFarClip_Break =                  pGTASA + 0x5A368A + 0x1;
+        aml->Redirect(pGTASA + 0x5A3680 + 0x1, (uintptr_t)MinFarClip_Patch);
+        HOOKBLX(SetRenderState_SunRefl,     pGTASA + 0x5A36A4 + 0x1);
     #else
-    HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
+        HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
     #endif
 }
 
 extern "C" void OnModLoad()
 {
     // This one below doesnt work. Yet?
-    //minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
+    minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
     if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
     {
-        aml->PlaceRET(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv")); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
+        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
     }
     if(cfg->GetBool("NoHorizonClouds", false, "Game tweaks"))
     {
@@ -611,7 +670,7 @@ extern "C" void OnModLoad()
     }
     if(cfg->GetBool("NoVolumetricClouds", false, "Game tweaks"))
     {
-        aml->PlaceRET(aml->GetSym(hGTASA, "_ZN7CClouds22RenderBottomFromHeightEv")); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
+        aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22RenderBottomFromHeightEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
     }
     if(cfg->GetBool("NoVanillaStars", false, "Game tweaks"))
     {
@@ -635,4 +694,6 @@ extern "C" void OnModLoad()
     // A new feature
     windStrengthAffectsRotation = cfg->GetBool("WindAffectsRotationSpeed", windStrengthAffectsRotation, "Skybox");
     windRotScale = cfg->GetFloat("WindRotationScale", windRotScale, "Skybox");
+
+    skyScaleAsOnPC = cfg->GetBool("ScaleSkiesAsOnPC", skyScaleAsOnPC, "Skybox");
 }
