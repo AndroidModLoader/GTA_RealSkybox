@@ -14,7 +14,7 @@
 #define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, GTA Real Skybox, 0.4, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, Real Skybox, 0.4, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.2.1)
 END_DEPLIST()
@@ -114,12 +114,10 @@ void            (*RwRenderStateSet)(RwRenderState, void *);
     }
     return NULL;
 }*/
-void LoadSkyboxTextures()
+inline void LoadSkyboxTextures()
 {
-    const char* szStartPath = "realskybox/tex/";
-
     FILE *file;
-    char line[256], textureName[32];
+    char line[256], textureName[rwTEXTUREBASENAMELENGTH];
     bool bStartLoading = false;
     int weatherId = 0;
 
@@ -134,7 +132,8 @@ void LoadSkyboxTextures()
 
     while (fgets(line, sizeof(line), file) != NULL)
     {
-        if(line[0] == 0 || line[0] == '#' || line[0] == ';' || line[0] == '/') continue;
+        if(line[0] == 0 || line[0] == '#' || line[0] == ';' || line[0] == '/' ||
+          (line[0] == '\t' && line[1] == 0) || (line[0] == ' ' && line[1] == 0)) continue;
         if(!bStartLoading)
         {
             if(!strncmp(line, "skytexs", 7)) bStartLoading = true;
@@ -143,16 +142,17 @@ void LoadSkyboxTextures()
 
         if(!strncmp(line, "end", 3)) break;
 
-        if((sscanf(line, "%d, %s", &weatherId, (char*)&textureName) == 2 || 
-            sscanf(line, "%d %s", &weatherId, (char*)&textureName) == 2) && weatherId <= WEATHER_FOR_STARS)
+        if((sscanf(line, "%d, %31s", &weatherId, textureName) == 2 || 
+            sscanf(line, "%d %31s", &weatherId, textureName) == 2) && weatherId <= WEATHER_FOR_STARS)
         {
+            textureName[rwTEXTUREBASENAMELENGTH - 1] = 0; // overflow fix
             //aSkyboxes[weatherId]->tex = GetTexIfLoaded(textureName);
             //if (!aSkyboxes[weatherId]->tex)
             {
                 aSkyboxes[weatherId]->tex = TextureDatabaseGetTexture(textureName);
                 if (aSkyboxes[weatherId]->tex)
                 {
-                    aSkyboxes[weatherId]->tex->filterAddressing = 2;
+                    aSkyboxes[weatherId]->tex->filterAddressing = rwFILTERLINEARMIPLINEAR;
                 }
             }
         }
@@ -161,7 +161,7 @@ void LoadSkyboxTextures()
     TextureDatabaseUnregister(tdb);
     fclose(file);
 }
-void PrepareSkyboxModel()
+inline void PrepareSkyboxModel()
 {
     RwStream *stream = RwStreamOpen(2, 1, "texdb/realskybox/skybox.dff");
     if (stream)
@@ -187,21 +187,21 @@ void PrepareSkyboxModel()
     }
     RwStreamClose(stream, 0);
 }
-void SetInUseForThisTexture(RwTexture *tex)
+inline void SetInUseForThisTexture(RwTexture *tex)
 {
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
     {
         if (tex == aSkyboxes[i]->tex) aSkyboxes[i]->inUse = true;
     }
 }
-void SetRotationForThisTexture(RwTexture *tex, float rot)
+inline void SetRotationForThisTexture(RwTexture *tex, float rot)
 {
     for (int i = 0; i <= eWeatherType::WEATHER_UNDERWATER; ++i)
     {
         if (tex == aSkyboxes[i]->tex) aSkyboxes[i]->rot = rot;
     }
 }
-bool NoSunriseWeather(eWeatherType id)
+inline bool NoSunriseWeather(eWeatherType id)
 {
     return (id == eWeatherType::WEATHER_CLOUDY_COUNTRYSIDE || id == eWeatherType::WEATHER_CLOUDY_LA || id == eWeatherType::WEATHER_CLOUDY_SF || id == eWeatherType::WEATHER_CLOUDY_VEGAS ||
             id == eWeatherType::WEATHER_RAINY_COUNTRYSIDE || id == eWeatherType::WEATHER_RAINY_SF || id == eWeatherType::WEATHER_FOGGY_SF);
@@ -215,7 +215,7 @@ void RenderSkybox()
 
     if (increaseRot > 0.0f)
     {
-        increaseRot -= pow(0.08f, 2) * *ms_fTimeStep * MAGIC_FLOAT;
+        increaseRot -= /*powf(0.08f, 2)*/ 0.0064f * *ms_fTimeStep * MAGIC_FLOAT;
         if (increaseRot < 0.0f) increaseRot = 0.0f;
     }
 
@@ -644,15 +644,10 @@ extern "C" void OnModPreLoad()
     // GTA Hooks
     HOOKPLT(GameInit3,                      pGTASA + BYVER(0x6742F0, 0x8470F0));
     HOOKPLT(RenderClouds,                   pGTASA + BYVER(0x672FFC, 0x8451A0));
-    HOOKPLT(TimecycUpdate,                  pGTASA + BYVER(0x673A5C, 0x8462B0));
     #ifdef AML32
         HOOKPLT(GameLogicPassTime,          pGTASA + 0x66F620);
-        MinFarClip_Continue =               pGTASA + 0x5A3598 + 0x1;
-        MinFarClip_Break =                  pGTASA + 0x5A368A + 0x1;
-        aml->Redirect(pGTASA + 0x5A3680 + 0x1, (uintptr_t)MinFarClip_Patch);
-        HOOKBLX(SetRenderState_SunRefl,     pGTASA + 0x5A36A4 + 0x1);
     #else
-        HOOK(GameLogicPassTime,                 aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
+        HOOK(GameLogicPassTime,             aml->GetSym(hGTASA, "_ZN10CGameLogic8PassTimeEj"));
     #endif
 }
 
@@ -660,6 +655,18 @@ extern "C" void OnModLoad()
 {
     // This one below doesnt work. Yet?
     minFarPlane = cfg->GetFloat("MinDrawDistance", minFarPlane, "Game tweaks");
+    if(minFarPlane > 300)
+    {
+        HOOKPLT(TimecycUpdate,              pGTASA + BYVER(0x673A5C, 0x8462B0));
+        #ifdef AML32
+            MinFarClip_Continue =           pGTASA + 0x5A3598 + 0x1;
+            MinFarClip_Break =              pGTASA + 0x5A368A + 0x1;
+            aml->Redirect(pGTASA + 0x5A3680 + 0x1, (uintptr_t)MinFarClip_Patch);
+            HOOKBLX(SetRenderState_SunRefl, pGTASA + 0x5A36A4 + 0x1);
+        #else
+
+        #endif
+    }
     if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
     {
         aml->Redirect(aml->GetSym(hGTASA, "_ZN7CClouds22VolumetricCloudsRenderEv"), (uintptr_t)Stub); // Yes, JuniorDjjr switched them by an accident. Keeping order for configs.
