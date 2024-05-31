@@ -375,6 +375,9 @@ void RenderSkybox()
     RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)(intptr_t)skyboxFogType); // warning: cast to 'void *' from smaller integer type 'int'
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &fogDensity);
 
+    // Fixing a glitch
+    RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)false);
+    RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)false);
     RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
     RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
 
