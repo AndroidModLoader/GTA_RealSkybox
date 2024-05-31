@@ -215,7 +215,7 @@ void RenderSkybox()
 
     if (increaseRot > 0.0f)
     {
-        increaseRot -= /*powf(0.08f, 2)*/ 0.0064f * *ms_fTimeStep * MAGIC_FLOAT;
+        increaseRot -= 0.0064f * *ms_fTimeStep * MAGIC_FLOAT;
         if (increaseRot < 0.0f) increaseRot = 0.0f;
     }
 
@@ -273,7 +273,7 @@ void RenderSkybox()
             else
             {
                 srand(time(NULL));
-                aSkyboxes[i]->rot = rand() * (360.0f / (float)RAND_MAX);
+                aSkyboxes[i]->rot = rand() * (360.0 / RAND_MAX);
             }
         }
         aSkyboxes[i]->inUse = false; // reset flag
@@ -375,6 +375,9 @@ void RenderSkybox()
     RwRenderStateSet(rwRENDERSTATEFOGTYPE, (void*)(intptr_t)skyboxFogType); // warning: cast to 'void *' from smaller integer type 'int'
     RwRenderStateSet(rwRENDERSTATEFOGDENSITY, &fogDensity);
 
+    RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
+    RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
+
     // Render skyboxes
     if (starsAlpha > 0.0f) // Stars
     {
@@ -472,7 +475,11 @@ void RenderSkybox()
 ///////////////////////////////     Hooks     ///////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
 uint32_t sunReflectionsCount = 20;
+#ifdef AML32
 uint32_t minFarClipPatchValue = 1440; // default
+#else
+uint32_t minFarClipPatchValue = 45; // default
+#endif
 DECL_HOOKb(GameInit3, void* data)
 {
     GameInit3(data);
@@ -506,7 +513,12 @@ DECL_HOOKv(TimecycUpdate)
         {
             // default is 1440 for 20:
             sunReflectionsCount = 20 * (*currentFarClip / 1000.0f);
+
+          #ifdef AML32
             minFarClipPatchValue = 72 * sunReflectionsCount;
+          #else
+            minFarClipPatchValue = 4 + sunReflectionsCount * 2 + 1;
+          #endif
         }
         lastFarClip = *currentFarClip;
     }
@@ -549,7 +561,9 @@ DECL_HOOKv(GameLogicPassTime, unsigned int time)
     }
     GameLogicPassTime(time);
 }
+
 uintptr_t MinFarClip_Continue, MinFarClip_Break;
+#ifdef AML32
 extern "C" uintptr_t MinFarClip_Inject(int val)
 {
     return (val < minFarClipPatchValue) ? MinFarClip_Continue : MinFarClip_Break;
@@ -565,6 +579,21 @@ __attribute__((optnone)) __attribute__((naked)) void MinFarClip_Patch(void)
     asm("POP {R0-R3}");
     asm("BX R12");
 }
+#else
+extern "C" uintptr_t MinFarClip_Inject(int val)
+{
+    return (val < minFarClipPatchValue) ? MinFarClip_Continue : MinFarClip_Break;
+}
+__attribute__((optnone)) __attribute__((naked)) void MinFarClip_Patch(void)
+{
+    asm("MOV W0, W26");
+    asm("BL MinFarClip_Inject");
+    asm("STR X28, [X9, #0xD0]");
+    asm("STP S4, S5, [X9, #0x90]");
+    asm("STP S1, S0, [X9, #0xB4]");
+    asm("BR X0");
+}
+#endif
 extern "C" void Stub(...) {}
 
 /////////////////////////////////////////////////////////////////////////////
@@ -664,7 +693,10 @@ extern "C" void OnModLoad()
             aml->Redirect(pGTASA + 0x5A3680 + 0x1, (uintptr_t)MinFarClip_Patch);
             HOOKBLX(SetRenderState_SunRefl, pGTASA + 0x5A36A4 + 0x1);
         #else
-
+            MinFarClip_Continue =           pGTASA + 0x6C6E00;
+            MinFarClip_Break =              pGTASA + 0x6C6EC4;
+            aml->Redirect(pGTASA + 0x6C6EB4, (uintptr_t)MinFarClip_Patch);
+            HOOKBL(SetRenderState_SunRefl, pGTASA + 0x6C6EEC);
         #endif
     }
     if(cfg->GetBool("NoLowClouds", false, "Game tweaks"))
