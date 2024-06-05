@@ -14,7 +14,7 @@
 #define sizeofA(__aVar)  ((int)(sizeof(__aVar)/sizeof(__aVar[0])))
 #include "skybox.h"
 
-MYMOD(net.juniordjjr.rusjj.realskybox, Real Skybox, 0.4, Junior Djrr & RusJJ)
+MYMOD(net.juniordjjr.rusjj.realskybox, Real Skybox, 0.5, Junior Djrr & RusJJ)
 BEGIN_DEPLIST()
     ADD_DEPENDENCY_VER(net.rusjj.aml, 1.2.1)
 END_DEPLIST()
@@ -589,11 +589,11 @@ extern "C" uintptr_t MinFarClip_Inject(int val)
 }
 __attribute__((optnone)) __attribute__((naked)) void MinFarClip_Patch(void)
 {
-    asm("MOV W0, W26");
-    asm("BL MinFarClip_Inject");
     asm("STR X28, [X9, #0xD0]");
     asm("STP S4, S5, [X9, #0x90]");
     asm("STP S1, S0, [X9, #0xB4]");
+    asm("MOV W0, W26");
+    asm("BL MinFarClip_Inject");
     asm("BR X0");
 }
 #endif
